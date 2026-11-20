@@ -60,7 +60,8 @@ import java.util.concurrent.TimeUnit
 
 @Composable
 fun AuthScreen(
-    onAuthSuccess: () -> Unit
+    onAuthSuccess: () -> Unit,
+    onPhoneVerified: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -74,12 +75,26 @@ fun AuthScreen(
     var authMessage by remember { mutableStateOf<String?>(null) }
     var isErrorMsg by remember { mutableStateOf(false) }
 
-    // Mobile OTP state
+    // Mobile OTP state (App Built-In OTP default + Live Firebase SMS OTP option)
     var phoneInput by remember { mutableStateOf("") }
     var otpInput by remember { mutableStateOf("") }
-    var demoOtpMode by remember { mutableStateOf(false) }
+    var demoOtpMode by remember { mutableStateOf(true) }
     var demoOtpSentCode by remember { mutableStateOf<String?>(null) }
+    var demoOtpExpiresAt by remember { mutableLongStateOf(0L) }
+    var demoOtpSecondsLeft by remember { mutableIntStateOf(0) }
+    var demoOtpAttempts by remember { mutableIntStateOf(0) }
+    var appOtpVerified by remember { mutableStateOf(false) }
     var verificationId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(demoOtpSentCode, demoOtpExpiresAt) {
+        while (demoOtpSentCode != null && demoOtpExpiresAt > System.currentTimeMillis()) {
+            demoOtpSecondsLeft = ((demoOtpExpiresAt - System.currentTimeMillis()) / 1000L).toInt().coerceAtLeast(0)
+            kotlinx.coroutines.delay(1000L)
+        }
+        if (demoOtpSentCode != null && System.currentTimeMillis() >= demoOtpExpiresAt) {
+            demoOtpSecondsLeft = 0
+        }
+    }
 
     // Email tab informational fields
     var emailInput by remember { mutableStateOf("") }
@@ -285,13 +300,17 @@ fun AuthScreen(
 
                     1 -> {
                         Text(
-                            text = "Mobile Number (+91) & 6-Digit OTP",
+                            text = if (isHindi) "मोबाइल नंबर (+91) और 6-अंकों का ऐप OTP" else "Mobile Number (+91) & 6-Digit App OTP",
                             style = MaterialTheme.typography.titleMedium,
                             color = Color.White
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Firebase Phone Auth sends real SMS OTP when enabled in Firebase Console. Use Demo OTP mode strictly for local testing.",
+                            text = if (isHindi) {
+                                "ऐप का अपना इन-बिल्ट 6-अंकों का OTP (टेस्टिंग/वेरिफिकेशन — यह असली SMS नहीं है) या Firebase लाइव SMS OTP चुनें।"
+                            } else {
+                                "Use the app's built-in 6-digit OTP (local verification — not a real SMS) or switch off to use Live Firebase SMS OTP."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFFB8C1E8)
                         )
@@ -303,15 +322,21 @@ fun AuthScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "Developer Demo OTP Mode (Testing Only)",
+                                text = if (isHindi) "ऐप का अपना OTP मोड (Not SMS)" else "App Built-In OTP Mode (Not SMS)",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = GoldBright
+                                color = GoldBright,
+                                fontWeight = FontWeight.SemiBold
                             )
                             Switch(
                                 checked = demoOtpMode,
                                 onCheckedChange = {
                                     demoOtpMode = it
                                     demoOtpSentCode = null
+                                    demoOtpExpiresAt = 0L
+                                    demoOtpSecondsLeft = 0
+                                    demoOtpAttempts = 0
+                                    appOtpVerified = false
+                                    otpInput = ""
                                     authMessage = null
                                 }
                             )
@@ -321,8 +346,13 @@ fun AuthScreen(
 
                         OutlinedTextField(
                             value = phoneInput,
-                            onValueChange = { if (it.length <= 10 && it.all { ch -> ch.isDigit() }) phoneInput = it },
-                            label = { Text("10-digit Mobile Number") },
+                            onValueChange = {
+                                if (it.length <= 10 && it.all { ch -> ch.isDigit() }) {
+                                    phoneInput = it
+                                    appOtpVerified = false
+                                }
+                            },
+                            label = { Text(if (isHindi) "10-अंकों का मोबाइल नंबर" else "10-digit Mobile Number") },
                             prefix = { Text("+91 ") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                             singleLine = true,
@@ -332,16 +362,37 @@ fun AuthScreen(
                         Spacer(modifier = Modifier.height(10.dp))
 
                         GlowingPurpleButton(
-                            text = "Send 6-Digit OTP",
+                            text = if (demoOtpMode) {
+                                if (demoOtpSentCode != null) {
+                                    if (isHindi) "नया ऐप OTP जनरेट करें" else "Regenerate 6-Digit App OTP"
+                                } else {
+                                    if (isHindi) "6-अंकों का ऐप OTP जनरेट करें" else "Generate 6-Digit App OTP"
+                                }
+                            } else {
+                                if (isHindi) "लाइव SMS OTP भेजें" else "Send Live SMS OTP"
+                            },
                             onClick = {
                                 if (phoneInput.length != 10) {
                                     isErrorMsg = true
-                                    authMessage = "Please enter a valid 10-digit Indian mobile number."
+                                    authMessage = if (isHindi) {
+                                        "कृपया सही 10-अंकों का भारतीय मोबाइल नंबर दर्ज करें।"
+                                    } else {
+                                        "Please enter a valid 10-digit Indian mobile number."
+                                    }
                                 } else if (demoOtpMode) {
                                     val code = (100000..999999).random().toString()
                                     demoOtpSentCode = code
+                                    demoOtpExpiresAt = System.currentTimeMillis() + 120_000L
+                                    demoOtpSecondsLeft = 120
+                                    demoOtpAttempts = 0
+                                    appOtpVerified = false
+                                    otpInput = ""
                                     isErrorMsg = false
-                                    authMessage = "DEMO TESTING OTP (not a real SMS): $code"
+                                    authMessage = if (isHindi) {
+                                        "ऐप का इन-बिल्ट OTP तैयार है (असली SMS नहीं): नीचे कोड दर्ज करें।"
+                                    } else {
+                                        "App Built-In OTP generated (not an SMS): enter the 6-digit code below."
+                                    }
                                 } else {
                                     val activity = context as? Activity
                                     if (activity == null) {
@@ -359,6 +410,7 @@ fun AuthScreen(
                                                     scope.launch {
                                                         try {
                                                             Firebase.auth.signInWithCredential(cred).await()
+                                                            onPhoneVerified("+91$phoneInput")
                                                             onAuthSuccess()
                                                         } catch (e: Exception) {
                                                             isErrorMsg = true
@@ -370,7 +422,15 @@ fun AuthScreen(
                                                 override fun onVerificationFailed(e: com.google.firebase.FirebaseException) {
                                                     isLoading = false
                                                     isErrorMsg = true
-                                                    authMessage = e.localizedMessage ?: "Enable Phone Sign-In in Firebase Console or use Google Sign-In."
+                                                    val raw = e.localizedMessage.orEmpty()
+                                                    authMessage = when {
+                                                        raw.contains("17006") || raw.contains("not enabled", ignoreCase = true) || raw.contains("OPERATION_NOT_ALLOWED", ignoreCase = true) ->
+                                                            "Live SMS OTP is not enabled on Firebase Console yet (Error 17006). Switch ON App Built-In OTP Mode above or use Google Sign-In."
+                                                        raw.contains("canceled", ignoreCase = true) || raw.contains("reCAPTCHA", ignoreCase = true) ->
+                                                            "Verification check was cancelled. Try again or use App Built-In OTP Mode."
+                                                        else ->
+                                                            raw.ifBlank { "Enable Phone Sign-In in Firebase Console or use App Built-In OTP Mode." }
+                                                    }
                                                 }
 
                                                 override fun onCodeSent(verId: String, token: PhoneAuthProvider.ForceResendingToken) {
@@ -390,12 +450,59 @@ fun AuthScreen(
                             testTag = "send_otp_button"
                         )
 
+                        if (demoOtpMode && demoOtpSentCode != null) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = GoldContainerDark,
+                                border = androidx.compose.foundation.BorderStroke(1.dp, GoldPrimary.copy(alpha = 0.7f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = if (isHindi) "ऐप इन-बिल्ट OTP (SMS नहीं)" else "App Built-In OTP (Not SMS)",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = GoldBright
+                                        )
+                                        Text(
+                                            text = demoOtpSentCode!!.chunked(1).joinToString(" "),
+                                            style = MaterialTheme.typography.titleLarge,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color.White
+                                        )
+                                        Text(
+                                            text = if (demoOtpSecondsLeft > 0) {
+                                                if (isHindi) "वैधता: ${demoOtpSecondsLeft}s" else "Valid for ${demoOtpSecondsLeft}s"
+                                            } else {
+                                                if (isHindi) "OTP समाप्त — नया OTP जनरेट करें" else "Expired — tap Regenerate above"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (demoOtpSecondsLeft > 0) EmeraldSuccess else RubyError
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = { otpInput = demoOtpSentCode.orEmpty() },
+                                        modifier = Modifier.testTag("autofill_app_otp_btn")
+                                    ) {
+                                        Icon(Icons.Rounded.AutoFixHigh, contentDescription = null, tint = GoldBright, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(if (isHindi) "भरें" else "Fill", color = GoldBright, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+
                         Spacer(modifier = Modifier.height(10.dp))
 
                         OutlinedTextField(
                             value = otpInput,
                             onValueChange = { if (it.length <= 6 && it.all { ch -> ch.isDigit() }) otpInput = it },
-                            label = { Text("Enter 6-digit OTP") },
+                            label = { Text(if (isHindi) "6-अंकों का OTP दर्ज करें" else "Enter 6-digit OTP") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth().testTag("otp_input")
@@ -404,15 +511,80 @@ fun AuthScreen(
                         Spacer(modifier = Modifier.height(10.dp))
 
                         GlowingGoldButton(
-                            text = "Verify OTP & Continue",
+                            text = if (appOtpVerified) {
+                                if (isHindi) "Google से लॉगिन पूरा करें (+91 वेरिफाइड)" else "Complete Login with Google (+91 Verified)"
+                            } else {
+                                if (isHindi) "OTP वेरिफाई करें और आगे बढ़ें" else "Verify OTP & Login"
+                            },
                             onClick = {
                                 if (demoOtpMode) {
-                                    if (otpInput.length == 6 && otpInput == demoOtpSentCode) {
-                                        isErrorMsg = false
-                                        authMessage = "Demo OTP verified! Complete Google Sign-In below to create your secure cloud wallet."
-                                    } else {
+                                    if (appOtpVerified) {
+                                        isLoading = true
+                                        onGoogleSignInClicked(
+                                            context = context,
+                                            credentialManager = credentialManager,
+                                            onAuthSuccess = {
+                                                isLoading = false
+                                                onAuthSuccess()
+                                            },
+                                            onAuthError = { msg ->
+                                                isLoading = false
+                                                isErrorMsg = true
+                                                authMessage = msg
+                                            },
+                                            scope = scope,
+                                            onAuthCancelled = {
+                                                isLoading = false
+                                                isErrorMsg = false
+                                                authMessage = "OTP verified for +91$phoneInput! Tap button above to finish Google account link."
+                                            }
+                                        )
+                                    } else if (demoOtpSentCode == null) {
                                         isErrorMsg = true
-                                        authMessage = "Incorrect demo OTP. Check the 6-digit test code above."
+                                        authMessage = if (isHindi) "पहले ऊपर 6-अंकों का ऐप OTP जनरेट करें।" else "Generate your 6-digit App OTP above first."
+                                    } else if (demoOtpSecondsLeft <= 0) {
+                                        isErrorMsg = true
+                                        authMessage = if (isHindi) "OTP की समय सीमा समाप्त हो गई है। नया OTP जनरेट करें।" else "OTP expired. Please regenerate a fresh 6-digit OTP."
+                                    } else if (demoOtpAttempts >= 5) {
+                                        isErrorMsg = true
+                                        authMessage = if (isHindi) "बहुत अधिक गलत प्रयास। नया OTP जनरेट करें।" else "Too many wrong attempts. Please regenerate a new OTP."
+                                    } else if (otpInput.length == 6 && otpInput == demoOtpSentCode) {
+                                        appOtpVerified = true
+                                        isErrorMsg = false
+                                        onPhoneVerified("+91$phoneInput")
+                                        authMessage = if (isHindi) {
+                                            "+91$phoneInput का ऐप OTP वेरिफाई हो गया! आपका क्लाउड वॉलेट खोला जा रहा है..."
+                                        } else {
+                                            "App OTP verified for +91$phoneInput! Connecting your secure cloud wallet..."
+                                        }
+                                        isLoading = true
+                                        onGoogleSignInClicked(
+                                            context = context,
+                                            credentialManager = credentialManager,
+                                            onAuthSuccess = {
+                                                isLoading = false
+                                                onAuthSuccess()
+                                            },
+                                            onAuthError = { msg ->
+                                                isLoading = false
+                                                isErrorMsg = true
+                                                authMessage = msg
+                                            },
+                                            scope = scope,
+                                            onAuthCancelled = {
+                                                isLoading = false
+                                                isErrorMsg = false
+                                                authMessage = "OTP verified for +91$phoneInput! Tap 'Complete Login with Google' to enter."
+                                            }
+                                        )
+                                    } else {
+                                        demoOtpAttempts += 1
+                                        isErrorMsg = true
+                                        authMessage = if (isHindi) {
+                                            "गलत 6-अंकों का OTP (${5 - demoOtpAttempts} प्रयास शेष)।"
+                                        } else {
+                                            "Incorrect 6-digit App OTP (${5 - demoOtpAttempts} attempts remaining)."
+                                        }
                                     }
                                 } else {
                                     val verId = verificationId
@@ -425,6 +597,7 @@ fun AuthScreen(
                                         scope.launch {
                                             try {
                                                 Firebase.auth.signInWithCredential(cred).await()
+                                                onPhoneVerified("+91$phoneInput")
                                                 isLoading = false
                                                 onAuthSuccess()
                                             } catch (e: Exception) {
@@ -436,6 +609,7 @@ fun AuthScreen(
                                     }
                                 }
                             },
+                            enabled = !isLoading,
                             modifier = Modifier.fillMaxWidth(),
                             testTag = "verify_otp_button"
                         )

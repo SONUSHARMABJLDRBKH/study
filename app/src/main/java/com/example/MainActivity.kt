@@ -59,6 +59,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AppContent() {
     var currentUser by remember { mutableStateOf(Firebase.auth.currentUser) }
+    var pendingVerifiedPhone by remember { mutableStateOf<String?>(null) }
+
     DisposableEffect(Unit) {
         val listener = FirebaseAuth.AuthStateListener { auth ->
             currentUser = auth.currentUser
@@ -69,18 +71,29 @@ fun AppContent() {
 
     if (currentUser == null) {
         StudyWinTheme(darkTheme = true) {
-            AuthScreen(onAuthSuccess = { currentUser = Firebase.auth.currentUser })
+            AuthScreen(
+                onAuthSuccess = { currentUser = Firebase.auth.currentUser },
+                onPhoneVerified = { phone -> pendingVerifiedPhone = phone }
+            )
         }
     } else {
         val uid = currentUser!!.uid
         key(uid) {
-            AuthenticatedStudyWinShell(currentUserId = uid)
+            AuthenticatedStudyWinShell(
+                currentUserId = uid,
+                pendingVerifiedPhone = pendingVerifiedPhone,
+                onClearPendingPhone = { pendingVerifiedPhone = null }
+            )
         }
     }
 }
 
 @Composable
-private fun AuthenticatedStudyWinShell(currentUserId: String) {
+private fun AuthenticatedStudyWinShell(
+    currentUserId: String,
+    pendingVerifiedPhone: String? = null,
+    onClearPendingPhone: () -> Unit = {}
+) {
     val context = LocalContext.current
     val viewModel: StudyWinViewModel = viewModel(
         key = currentUserId,
@@ -115,6 +128,15 @@ private fun AuthenticatedStudyWinShell(currentUserId: String) {
 
     val adMob = remember { AdMobManager.getInstance() }
     val useTestAds by adMob.useTestAds.collectAsStateWithLifecycle()
+
+    // Save verified +91 mobile number from OTP flow once Firestore profile exists
+    LaunchedEffect(currentUserId, pendingVerifiedPhone, profile != null) {
+        val phone = pendingVerifiedPhone
+        if (!phone.isNullOrBlank() && profile != null) {
+            viewModel.linkVerifiedPhone(phone)
+            onClearPendingPhone()
+        }
+    }
 
     // Preload Rewarded & Interstitial Ads once authenticated
     LaunchedEffect(currentUserId, useTestAds) {
